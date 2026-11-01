@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragDropEvent } from "@tauri-apps/api/webview";
 import {
   EXPLORER_FILE_POINTER_DRAG_EVENT,
-  type ExplorerFilePointerDragDetail,
+  FILE_TAB_POINTER_DRAG_EVENT,
+  type FilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import { Composer } from "./Composer";
 
@@ -115,11 +116,17 @@ function attachmentCount() {
   return container.querySelectorAll('[aria-label^="Remove "]').length;
 }
 
-function explorerDrag(detail: ExplorerFilePointerDragDetail) {
-  return new CustomEvent<ExplorerFilePointerDragDetail>(
+function explorerDrag(detail: FilePointerDragDetail) {
+  return new CustomEvent<FilePointerDragDetail>(
     EXPLORER_FILE_POINTER_DRAG_EVENT,
     { detail },
   );
+}
+
+function fileTabDrag(detail: FilePointerDragDetail) {
+  return new CustomEvent<FilePointerDragDetail>(FILE_TAB_POINTER_DRAG_EVENT, {
+    detail,
+  });
 }
 
 beforeEach(() => {
@@ -191,6 +198,68 @@ describe("Composer Explorer file drops", () => {
     expect(
       container.querySelector('[title="/project/src/main.ts"]'),
     ).not.toBeNull();
+  });
+});
+
+describe("Composer file tab drops", () => {
+  it("attaches a file dragged from an open file tab", async () => {
+    await render();
+
+    act(() =>
+      window.dispatchEvent(
+        fileTabDrag({
+          type: "move",
+          path: "/project/src/main.ts",
+          x: 100,
+          y: 100,
+        }),
+      ),
+    );
+    expect(container.textContent).toContain("Drop files to attach");
+
+    await act(async () => {
+      window.dispatchEvent(
+        fileTabDrag({
+          type: "drop",
+          path: "/project/src/main.ts",
+          x: 100,
+          y: 100,
+        }),
+      );
+    });
+
+    expect(invoke).toHaveBeenCalledWith("inspect_paths", {
+      paths: ["/project/src/main.ts"],
+    });
+    expect(
+      container.querySelector('[title="/project/src/main.ts"]'),
+    ).not.toBeNull();
+  });
+
+  it("clears the drop prompt when a file tab drag ends", async () => {
+    await render();
+
+    act(() =>
+      window.dispatchEvent(
+        fileTabDrag({
+          type: "move",
+          path: "/project/src/main.ts",
+          x: 100,
+          y: 100,
+        }),
+      ),
+    );
+    expect(container.textContent).toContain("Drop files to attach");
+
+    act(() =>
+      window.dispatchEvent(
+        fileTabDrag({ type: "end", path: "/project/src/main.ts" }),
+      ),
+    );
+    expect(container.textContent).not.toContain("Drop files to attach");
+    expect(invoke).not.toHaveBeenCalledWith("inspect_paths", {
+      paths: ["/project/src/main.ts"],
+    });
   });
 });
 

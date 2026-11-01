@@ -1811,7 +1811,8 @@ html.is-explorer-file-dragging * {
   cursor: grabbing !important;
 }
 
-.explorer-file-drag-preview {
+.explorer-file-drag-preview,
+.file-tab-drag-preview {
   position: fixed !important;
   inset: 0 auto auto 0 !important;
   z-index: 2147483647;
@@ -1844,13 +1845,15 @@ html.is-explorer-file-dragging * {
   contain: paint;
 }
 
-.explorer-file-drag-preview > span {
+.explorer-file-drag-preview > span,
+.file-tab-drag-preview > span {
   display: flex;
   min-width: 0;
   align-items: center;
 }
 
-html.theme-light .explorer-file-drag-preview {
+html.theme-light .explorer-file-drag-preview,
+html.theme-light .file-tab-drag-preview {
   background: var(--color-background-base) !important;
   opacity: 1 !important;
 }

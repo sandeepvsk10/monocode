@@ -13,7 +13,7 @@ import {
 import type { FsEntry } from "../../../platform/tauri/fs";
 import {
   EXPLORER_FILE_POINTER_DRAG_EVENT,
-  type ExplorerFilePointerDragDetail,
+  type FilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import { FileTree } from "./FileTree";
 
@@ -375,9 +375,9 @@ describe("FileTree starts Explorer file drags", () => {
     await act(async () => render());
     const fileRow = row("first.ts");
     const folderRow = row("docs");
-    const events: ExplorerFilePointerDragDetail[] = [];
+    const events: FilePointerDragDetail[] = [];
     const onDrag = (event: Event) => {
-      events.push((event as CustomEvent<ExplorerFilePointerDragDetail>).detail);
+      events.push((event as CustomEvent<FilePointerDragDetail>).detail);
     };
     window.addEventListener(EXPLORER_FILE_POINTER_DRAG_EVENT, onDrag);
 

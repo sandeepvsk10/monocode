@@ -2,7 +2,8 @@ import { useEffect, useState, type RefObject } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   EXPLORER_FILE_POINTER_DRAG_EVENT,
-  type ExplorerFilePointerDragDetail,
+  FILE_TAB_POINTER_DRAG_EVENT,
+  type FilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import { dragPointToClient } from "../../../shared/lib/dragPoint";
 import type { Attachment } from "../model/session";
@@ -84,8 +85,7 @@ export function useFileDrop({
 
     const onExplorerFilePointerDrag = (event: Event) => {
       if (state.current.remote) return;
-      const detail = (event as CustomEvent<ExplorerFilePointerDragDetail>)
-        .detail;
+      const detail = (event as CustomEvent<FilePointerDragDetail>).detail;
       if (!detail || detail.type === "end") {
         setFileDrag(false);
         return;
@@ -107,6 +107,10 @@ export function useFileDrop({
     root?.addEventListener("drop", onDrop);
     window.addEventListener(
       EXPLORER_FILE_POINTER_DRAG_EVENT,
+      onExplorerFilePointerDrag,
+    );
+    window.addEventListener(
+      FILE_TAB_POINTER_DRAG_EVENT,
       onExplorerFilePointerDrag,
     );
 
@@ -152,6 +156,10 @@ export function useFileDrop({
       root?.removeEventListener("drop", onDrop);
       window.removeEventListener(
         EXPLORER_FILE_POINTER_DRAG_EVENT,
+        onExplorerFilePointerDrag,
+      );
+      window.removeEventListener(
+        FILE_TAB_POINTER_DRAG_EVENT,
         onExplorerFilePointerDrag,
       );
       unlisten?.();

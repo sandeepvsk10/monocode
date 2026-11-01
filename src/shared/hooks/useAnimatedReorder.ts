@@ -16,6 +16,8 @@ export type ReorderExternalDrop<T extends string> = {
   /** Return true when the external target consumed the drop. */
   onDrop: (id: T, event: globalThis.PointerEvent) => boolean;
   onEnd?: (id: T) => void;
+  /** Let a lone item start a drag, since it can still be dropped outside. */
+  dragsLoneItem?: boolean;
 };
 
 /** How long a button-less move waits for a late pointerup before cancelling. */
@@ -60,7 +62,8 @@ export function useAnimatedReorder<T extends string>(
       suppressClickUntil.current = 0;
       const items = latest.current.ids;
       const from = items.indexOf(id);
-      if (items.length < 2 || from < 0) return;
+      const minItems = latest.current.externalDrop?.dragsLoneItem ? 1 : 2;
+      if (items.length < minItems || from < 0) return;
       const elements = items.map((item) => nodes.current.get(item));
       if (elements.some((element) => !element)) return;
       const tabs = elements as HTMLElement[];
@@ -88,7 +91,9 @@ export function useAnimatedReorder<T extends string>(
             };
       });
       const gap =
-        rects[1].start - rects[0].end - margins[0].after - margins[1].before;
+        rects.length > 1
+          ? rects[1].start - rects[0].end - margins[0].after - margins[1].before
+          : 0;
       const origin = rects[0].start - margins[0].before;
       /** Start position of each item when the dragged item is moved to index `to`. */
       const layout = (to: number) => {

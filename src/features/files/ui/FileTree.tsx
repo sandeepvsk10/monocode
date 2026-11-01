@@ -64,7 +64,9 @@ import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../../platform/tauri/platform";
 import type { OpenFileFn } from "../../search/model/search";
 import type { GitStatusMap } from "../../source-control/hooks/useGitFileStatuses";
 import {
+  createFileDragPreview,
   emitExplorerFilePointerDrag,
+  moveFileDragPreview,
   setGrabbing,
   suppressTextSelection,
 } from "../../../shared/lib/drag";
@@ -317,39 +319,18 @@ export const FileTree = memo(function FileTree({
     let restoreSelection: (() => void) | undefined;
     let preview: HTMLDivElement | null = null;
 
-    const movePreview = () => {
-      if (!preview) return;
-      const edge = 8;
-      const grabX = 12;
-      const grabY = 13;
-      const width = preview.offsetWidth;
-      const height = preview.offsetHeight;
-      const x = Math.min(
-        Math.max(edge, lastX - grabX),
-        Math.max(edge, window.innerWidth - width - edge),
-      );
-      const y = Math.min(
-        Math.max(edge, lastY - grabY),
-        Math.max(edge, window.innerHeight - height - edge),
-      );
-      preview.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(
-        y,
-      )}px, 0)`;
-    };
+    const movePreview = () => moveFileDragPreview(preview, lastX, lastY);
 
     const createPreview = () => {
-      preview = document.createElement("div");
-      preview.setAttribute("aria-hidden", "true");
-      preview.classList.add("explorer-file-drag-preview");
-
       // Keep the useful identity of the row without dragging its full-width
       // layout, indentation spacer, selection state, or button behavior.
       const icon = handle.children.item(1)?.cloneNode(true);
       const label = handle.children.item(2)?.cloneNode(true);
-      if (icon) preview.append(icon);
-      if (label) preview.append(label);
-
-      document.body.append(preview);
+      preview = createFileDragPreview(
+        "explorer-file-drag-preview",
+        icon,
+        label,
+      );
       movePreview();
     };
 

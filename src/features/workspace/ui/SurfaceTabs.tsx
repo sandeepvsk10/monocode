@@ -29,7 +29,15 @@ import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { releaseNotesTitle } from "../../../app/model/releaseNotes";
 import { terminalTabLabel } from "../../terminal/model/terminalTab";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
-import { useAnimatedReorder } from "../../../shared/hooks/useAnimatedReorder";
+import {
+  useAnimatedReorder,
+  type ReorderExternalDrop,
+} from "../../../shared/hooks/useAnimatedReorder";
+import {
+  createFileDragPreview,
+  emitFileTabPointerDrag,
+  moveFileDragPreview,
+} from "../../../shared/lib/drag";
 import { useTabCloseMotion } from "../hooks/useTabCloseMotion";
 import { TabWidthMotion } from "../../../app/shell/ClosingTab";
 import {
@@ -210,7 +218,67 @@ export function SurfaceTabs({
   const [menu, setMenu] = useState<SurfaceTabMenu | null>(null);
   const [fileActionError, setFileActionError] = useState<string | null>(null);
   const fileIds = files.map((file) => file.id);
-  const sortable = useAnimatedReorder(fileIds, onReorder);
+  const fileDrag = useRef<{
+    path: string;
+    preview: HTMLDivElement;
+    overChat: boolean;
+  } | null>(null);
+  // Open file tabs drag into a chat the same way Explorer rows do.
+  const externalDrop: ReorderExternalDrop<string> = {
+    onMove: (id, event) => {
+      if (!fileDrag.current) {
+        const file = files.find((entry) => entry.id === id);
+        if (!file || !isFilesystemTab(file) || isChangesTab(file)) {
+          return false;
+        }
+        // Keep the tab's icon and label, as Explorer keeps its row's.
+        const button = document.querySelector(
+          `[data-tab-slot-id="${CSS.escape(id)}"] [role="tab"]`,
+        );
+        const icon = button?.children.item(0)?.cloneNode(true);
+        const label = button?.children.item(1)?.cloneNode(true);
+        fileDrag.current = {
+          path: file.path,
+          preview: createFileDragPreview("file-tab-drag-preview", icon, label),
+          overChat: false,
+        };
+      }
+      const drag = fileDrag.current;
+      moveFileDragPreview(drag.preview, event.clientX, event.clientY);
+      drag.overChat = !!document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest("[data-session-drop]");
+      emitFileTabPointerDrag({
+        type: "move",
+        path: drag.path,
+        x: event.clientX,
+        y: event.clientY,
+      });
+      return drag.overChat;
+    },
+    onDrop: (_id, event) => {
+      const drag = fileDrag.current;
+      if (!drag?.overChat) return false;
+      emitFileTabPointerDrag({
+        type: "drop",
+        path: drag.path,
+        x: event.clientX,
+        y: event.clientY,
+      });
+      return true;
+    },
+    onEnd: () => {
+      const drag = fileDrag.current;
+      if (!drag) return;
+      fileDrag.current = null;
+      drag.preview.remove();
+      emitFileTabPointerDrag({ type: "end", path: drag.path });
+    },
+    dragsLoneItem: files.some(
+      (file) => isFilesystemTab(file) && !isChangesTab(file),
+    ),
+  };
+  const sortable = useAnimatedReorder(fileIds, onReorder, "x", externalDrop);
   const { displayed, setTabNode, finishMotion } = useTabCloseMotion(files);
   const menuFile = menu
     ? files.find((file) => file.id === menu.fileId)
