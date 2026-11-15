@@ -56,21 +56,27 @@ impl Render for DraggedFile {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        div()
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .px_2()
-            .py_1p5()
-            .rounded_md()
-            .border_1()
-            .border_color(stroke())
-            .bg(pane_fill())
-            .text_size(px(12.))
-            .text_color(content(1.))
-            .child(file_type_icon(&name, false, false, 16.))
-            .child(div().max_w(px(240.)).truncate().child(name))
+        file_drag_preview(file_type_icon(&name, false, false, 16.), name)
     }
+}
+
+/// The chip that follows the pointer while a file is dragged toward a chat.
+/// Each drag source passes the icon it shows for the file.
+pub(crate) fn file_drag_preview(icon: impl IntoElement, name: impl IntoElement) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .border_1()
+        .border_color(stroke())
+        .bg(pane_fill())
+        .text_size(px(12.))
+        .text_color(content(1.))
+        .child(icon)
+        .child(div().max_w(px(240.)).truncate().child(name))
 }
 
 actions!(

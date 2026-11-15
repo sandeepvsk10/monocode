@@ -4,7 +4,7 @@
 //! build each diff there too; the view only lays out rows.
 use crate::{
     diff_view::{DiffEvent, DiffFile, DiffView},
-    explorer::DraggedFile,
+    explorer::{DraggedFile, file_drag_preview},
     file_editor::{FileEditor, FileEvent},
     git_status::{GitChanged, ProjectGit},
     pane_motion::PaneReveal,
@@ -293,6 +293,13 @@ struct FileTabDrag {
     offset: Pixels,
     bounds: Vec<Bounds<Pixels>>,
     active: bool,
+}
+/// A file tab's drag preview shows the tab's own tile, as Explorer rows show their icon.
+struct FileTabDragPreview(SharedString);
+impl Render for FileTabDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        file_drag_preview(crate::tab_tile::file_tile(Some(&self.0)), self.0.clone())
+    }
 }
 impl EventEmitter<ReviewEvent> for ReviewPane {}
 impl Drop for ReviewPane {
@@ -1654,7 +1661,10 @@ impl ReviewPane {
                     .items_center()
                     // Open file tabs drag into a chat the same way Explorer rows do.
                     .when_some(file, |d, file| {
-                        d.on_drag(DraggedFile(file), |file, _, _, cx| cx.new(|_| file.clone()))
+                        let name = label.clone();
+                        d.on_drag(DraggedFile(file), move |_, _, _, cx| {
+                            cx.new(|_| FileTabDragPreview(name.clone()))
+                        })
                     })
                     .on_mouse_down(
                         MouseButton::Left,
