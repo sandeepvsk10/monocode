@@ -4,6 +4,7 @@
 //! build each diff there too; the view only lays out rows.
 use crate::{
     diff_view::{DiffEvent, DiffFile, DiffView},
+    explorer::DraggedFile,
     file_editor::{FileEditor, FileEvent},
     git_status::{GitChanged, ProjectGit},
     pane_motion::PaneReveal,
@@ -13,8 +14,8 @@ use crate::{
 };
 use gpui::{
     AnyElement, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Role, ScrollHandle,
-    SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
+    FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role,
+    ScrollHandle, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
 };
 use monocode_core::{
     diff,
@@ -799,19 +800,33 @@ impl ReviewPane {
         });
     }
     fn move_tab_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some(drag) = &mut self.tab_drag else {
+        if self.tab_drag.is_none() {
             return;
-        };
+        }
         if event.pressed_button != Some(MouseButton::Left) {
             self.tab_drag = None;
             cx.notify();
             return;
         }
-        let delta = event.position.x - drag.origin;
+        self.drag_tab_to(event.position, cx);
+    }
+    fn drag_tab_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = &mut self.tab_drag else {
+            return;
+        };
+        let delta = position.x - drag.origin;
         if !drag.active && delta.abs() < px(4.) {
             return;
         }
         drag.active = true;
+        // A file tab pulled out of the strip is on its way to a chat, so it keeps its slot.
+        let tab = drag.bounds[drag.from];
+        if cx.has_active_drag() && (position.y < tab.top() || position.y > tab.bottom()) {
+            drag.offset = px(0.);
+            drag.to = drag.from;
+            cx.notify();
+            return;
+        }
         let start = drag.bounds[drag.from].left();
         drag.offset = delta.clamp(
             drag.bounds[0].left() - start,
@@ -830,7 +845,9 @@ impl ReviewPane {
             .map_or(drag.from, |(ix, _)| ix);
         cx.notify();
     }
-    fn finish_tab_drag(&mut self, cx: &mut Context<Self>) {
+    fn finish_tab_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // A file tab's drag consumes the first move, so place the tab where it was released.
+        self.drag_tab_to(position, cx);
         let Some(drag) = self.tab_drag.take() else {
             return;
         };
@@ -1619,6 +1636,10 @@ impl ReviewPane {
                 let active = ix == self.state.active;
                 let hovered = self.hovered_tab == Some(ix);
                 let preview = matches!(&source.tab, ReviewTab::File { path, .. } if self.preview_path.as_ref() == Some(path));
+                let file = match &source.tab {
+                    ReviewTab::File { path, .. } => Some(PathBuf::from(path)),
+                    _ => None,
+                };
                 let label: SharedString = source.tab.label().into();
                 div()
                     .id(("review-tab", ix))
@@ -1631,6 +1652,10 @@ impl ReviewPane {
                     .flex_shrink(1.)
                     .flex()
                     .items_center()
+                    // Open file tabs drag into a chat the same way Explorer rows do.
+                    .when_some(file, |d, file| {
+                        d.on_drag(DraggedFile(file), |file, _, _, cx| cx.new(|_| file.clone()))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event, window, cx| {
@@ -1864,11 +1889,15 @@ impl Render for ReviewPane {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_tab_drag(cx)),
+                cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                    this.finish_tab_drag(event.position, cx)
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_tab_drag(cx)),
+                cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                    this.finish_tab_drag(event.position, cx)
+                }),
             )
             .font_weight(FontWeight::NORMAL)
             .child(self.tabs(window, cx))
