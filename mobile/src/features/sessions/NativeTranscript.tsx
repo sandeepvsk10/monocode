@@ -171,7 +171,16 @@ export function NativeTranscript({
               return [...layers.body, ...layers.open];
             })()
           : [],
-        scale: fontScale,
+        // Its talking frame, swapped in while it works.
+        agentTalkRects: agent
+          ? (() => {
+              const layers = pixelLayers(agent.mascot, agent.color, true);
+              return [...layers.body, ...layers.open];
+            })()
+          : [],
+        // A Mono's chat reads a size up: 17 for the body's 16, and the rest
+        // in step, its line heights too.
+        scale: agent ? (fontScale * 17) / 16 : fontScale,
         pixelRatio,
         collapsed,
       }),
@@ -200,7 +209,7 @@ export function NativeTranscript({
     ({ nativeEvent: action }: NativeSyntheticEvent<Action>) => {
       if (action.type === "error" && action.notice) showError(action.notice);
       else if (action.type === "metrics" && action.metrics) setMetrics(action);
-      else if (action.type === "copy" && action.copyText) {
+      else if (action.type === "copy" && typeof action.copyText === "string") {
         void Clipboard.setStringAsync(action.copyText)
           .then(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light))
           .catch(() => {});

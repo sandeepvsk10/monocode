@@ -1,7 +1,7 @@
 //! Native transcript projection. Neither watch frames nor parsed text cross JS.
 //! Row IDs survive appends, so the platform only measures changed blocks.
 use crate::LinkResult;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -171,6 +171,10 @@ fn parse_blocks(id: &str, text: &str, offset: usize) -> Vec<Block> {
                             code_group = format!("{id}:{}:code", offset + range.start);
                             code_line = 0;
                             current.as_mut().unwrap().presentation["group"] = json!(code_group);
+                            if let Tag::CodeBlock(CodeBlockKind::Fenced(info)) = &tag {
+                                current.as_mut().unwrap().presentation["language"] =
+                                    json!(info.split_whitespace().next().unwrap_or(""));
+                            }
                         }
                         if kind == "table" {
                             let row = current.as_mut().unwrap();
@@ -219,6 +223,33 @@ fn parse_blocks(id: &str, text: &str, offset: usize) -> Vec<Block> {
                             current = None;
                         }
                         flush(&mut current, &mut block);
+                        if tag == TagEnd::CodeBlock {
+                            if let Some(block) = block.as_mut() {
+                                let rows: Vec<_> = block
+                                    .rows
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, row)| {
+                                        row.presentation["group"].as_str() == Some(&code_group)
+                                    })
+                                    .collect();
+                                let text = rows
+                                    .iter()
+                                    .map(|(_, row)| {
+                                        row.runs
+                                            .iter()
+                                            .map(|run| run.text.as_str())
+                                            .collect::<String>()
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                if let Some((first, _)) = rows.first() {
+                                    let first = *first;
+                                    Arc::make_mut(&mut block.rows[first]).action =
+                                        json!({"type":"copy","copyText":text});
+                                }
+                            }
+                        }
                         code = false;
                     }
                     TagEnd::List(_) => {
@@ -366,6 +397,7 @@ pub struct Transcript {
     busy: bool,
     /// What the agent waits on the user to answer, as the desktop sent it.
     question: Value,
+    usage_limit: Value,
     question_generation: u64,
     older: bool,
     error: Option<String>,
@@ -386,6 +418,7 @@ impl Transcript {
             pending: Value::Null,
             busy: false,
             question: Value::Null,
+            usage_limit: Value::Null,
             question_generation: 0,
             older: false,
             error: None,
@@ -417,6 +450,7 @@ impl Transcript {
                     .unwrap_or_else(|| from_messages(&command["messages"]));
                 self.busy = command["busy"].as_bool().unwrap_or(false);
                 self.set_question(&command["question"]);
+                self.usage_limit = command["usageLimit"].clone();
                 // A read says whether turns precede its window, as a watch does.
                 self.older = command["older"].as_bool().unwrap_or(false);
                 self.error = None;
@@ -534,6 +568,9 @@ impl Transcript {
                     self.older = older;
                 }
                 // Sent when it changes; null once answered.
+                if let Some(limit) = frame.get("usageLimit") {
+                    self.usage_limit = limit.clone();
+                }
                 if let Some(question) = frame.get("question") {
                     self.set_question(question);
                 }
@@ -694,7 +731,7 @@ impl Transcript {
             "order": if order == self.order { None } else { Some(&order) },
             "status": { "busy":self.busy, "error":self.error, "hasTurns":!turns.is_empty(), "ready":self.ready, "lastUserId":self.last_user_id(),
                 "userCount":self.user_count(), "pendingId":self.pending["turn"]["id"], "notice":latest_error,
-                "question":self.question, "questionGeneration":self.question_generation },
+                "question":self.question, "questionGeneration":self.question_generation, "usageLimit":self.usage_limit },
             "older": self.history_older.unwrap_or(self.older),
             "firstTurnId": self.history.first().or(self.turns.first()).map(|t| string(t,"id")),
             "watchFrom": self.turns.first().map(|t| string(t,"id")),
@@ -1215,6 +1252,13 @@ mod tests {
         let rows: Vec<_> = md.blocks.iter().flat_map(|b| &b.rows).collect();
         let code: Vec<_> = rows.iter().filter(|r| r.kind == "code").collect();
         assert_eq!(code.len(), 2); // No trailing blank line from the fence.
+        assert_eq!(
+            code[0].action,
+            json!({"type":"copy","copyText":"const a = 1;\nconst b = 2;"})
+        );
+        assert_eq!(code[1].action, Value::Null);
+        assert_eq!(code[0].presentation["language"], "ts");
+        assert!(code[1].presentation.get("language").is_none());
         assert_eq!(code[0].presentation["group"], code[1].presentation["group"]);
         assert_eq!(code[0].presentation["first"], true);
         assert_eq!(code[0].presentation["last"], false);
@@ -1266,14 +1310,40 @@ mod tests {
     }
 
     #[test]
-    fn appending_code_changes_only_the_previous_last_line_and_new_lines() {
+    fn code_copy_actions_keep_fences_separate_and_preserve_literal_contents() {
+        let mut md = Markdown::default();
+        md.update("m", "Prose\n\n```md\n# Heading\n\n  **literal** 👋\n```\n\n> ~~~sh\n> echo hi\n> ~~~\n\n```\n```");
+        let actions: Vec<_> = md
+            .blocks
+            .iter()
+            .flat_map(|b| &b.rows)
+            .filter(|r| r.action["type"] == "copy")
+            .map(|r| &r.action["copyText"])
+            .collect();
+        assert_eq!(
+            actions,
+            vec![
+                &json!("# Heading\n\n  **literal** 👋"),
+                &json!("echo hi"),
+                &json!("")
+            ]
+        );
+    }
+
+    #[test]
+    fn appending_code_updates_copy_action_and_only_changed_lines() {
         let turn = |text: &str| json!({"id":"t","items":[{"id":"a","type":"text","text":text}]});
         let mut t = Transcript::new(vec![turn("```ts\none\ntwo\nthree")], true);
         t.update(json!({"type":"render"})).unwrap();
         let delta = t.update(json!({"type":"frames","frames":[{"order":["t"],"turns":[turn("```ts\none\ntwo\nthree\nfour")]}]})).unwrap();
         let changed = delta["rows"].as_array().unwrap();
-        assert_eq!(changed.len(), 2);
-        assert!(changed.iter().all(|r| r["id"] != "t/a:0"));
+        assert_eq!(changed.len(), 3);
+        let first = changed.iter().find(|r| r["id"] == "t/a:0").unwrap();
+        assert_eq!(
+            first["action"],
+            json!({"type":"copy","copyText":"one\ntwo\nthree\nfour"})
+        );
+        assert!(changed.iter().all(|r| r["id"] != "t/a:0:code:line1"));
     }
     #[test]
     fn incremental_markdown_matches_complete_parse_at_every_unicode_boundary() {
@@ -1425,6 +1495,30 @@ mod tests {
         assert!(after["status"]["pendingId"].is_null());
         assert_eq!(after["status"]["lastUserId"], "4/u");
     }
+    #[test]
+    fn usage_limit_passes_through_reads_frames_preferences_and_clearing() {
+        let mut transcript = Transcript::new(Vec::new(), false);
+        let limit =
+            json!({"token":"a", "resetsAt":123456, "resumeAtReset":false, "canResume":false});
+        let read = transcript
+            .update(json!({"type":"replace", "turns":[], "usageLimit":limit}))
+            .unwrap();
+        assert_eq!(read["status"]["usageLimit"], limit);
+        let retained = transcript
+            .update(json!({"type":"frames", "frames":[{"busy":false}]}))
+            .unwrap();
+        assert_eq!(retained["status"]["usageLimit"], limit);
+        let armed = json!({"token":"b", "resetsAt":123456, "resumeAtReset":true});
+        let update = transcript
+            .update(json!({"type":"frames", "frames":[{"usageLimit":armed}]}))
+            .unwrap();
+        assert_eq!(update["status"]["usageLimit"], armed);
+        let cleared = transcript
+            .update(json!({"type":"frames", "frames":[{"usageLimit":null}]}))
+            .unwrap();
+        assert!(cleared["status"]["usageLimit"].is_null());
+    }
+
     #[test]
     fn question_generation_survives_coalesced_clears_and_snapshot_refreshes() {
         let mut transcript = Transcript::new(vec![], false);

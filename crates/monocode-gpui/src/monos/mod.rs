@@ -45,7 +45,7 @@ use monocode_core::{
     provider::Kind,
     store::Session,
 };
-use panels::{OpenPicker, OverviewTab, Route, SettingsSection};
+use panels::{OpenPicker, OverviewTab, PanelView, Route, SettingsSection};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -104,6 +104,12 @@ pub(crate) struct Monos {
     contributions_loading: HashSet<String>,
     overview_reveal: Option<crate::project_tabs::TabReveal<OverviewTab>>,
     route: Option<Route>,
+    /// Each Mono's details-panel tab and open page, restored when it is
+    /// opened again.
+    panel_views: HashMap<String, PanelView>,
+    /// Drops a restored session page once it proves archived or deleted;
+    /// explicit navigation cancels it.
+    panel_check: Option<gpui::Task<()>>,
     settings: Option<SettingsSection>,
     settings_focus: gpui::FocusHandle,
     fields: HashMap<String, Entity<Input>>,
@@ -120,6 +126,8 @@ pub(crate) struct Monos {
     picker: Option<OpenPicker>,
     settings_anchor: AnchorSlot,
     model_anchor: AnchorSlot,
+    subsession_model_anchor: AnchorSlot,
+    subsession_effort_anchor: AnchorSlot,
     projects_anchor: AnchorSlot,
     access_anchor: AnchorSlot,
     menu: Option<(String, Entity<Menu>, Vec<Subscription>)>,
@@ -336,6 +344,8 @@ impl Monos {
             contributions_loading: HashSet::new(),
             overview_reveal: None,
             route: None,
+            panel_views: HashMap::new(),
+            panel_check: None,
             settings: None,
             settings_focus: cx.focus_handle(),
             fields: HashMap::new(),
@@ -352,6 +362,8 @@ impl Monos {
             picker: None,
             settings_anchor: AnchorSlot::default(),
             model_anchor: AnchorSlot::default(),
+            subsession_model_anchor: AnchorSlot::default(),
+            subsession_effort_anchor: AnchorSlot::default(),
             projects_anchor: AnchorSlot::default(),
             access_anchor: AnchorSlot::default(),
             menu: None,
@@ -700,9 +712,13 @@ impl Monos {
             let mut summary = db.create(provider.id(), &home)?;
             summary.title = mono.label();
             db.title(summary.id, &summary.title)?;
+            // A Mono's chat is conversation: it answers quickly at low effort
+            // and hands heavy work to background sessions. Only new chats get
+            // this; existing Monos keep whatever effort they already have.
             let settings = Settings {
                 access: AccessMode::Auto,
                 model: prefs.default_models.get(provider.id()).cloned(),
+                effort: Some("low".into()),
                 ..Default::default()
             };
             db.configure_agent(summary.id, provider.id(), &settings)?;
@@ -1064,21 +1080,8 @@ impl Monos {
         if !self.prefs.monos || self.roster.get(id).is_none() {
             return;
         }
-        if self.active.as_deref() != Some(id) {
-            self.save_open_file(cx);
-            self.pause_changes(cx);
-            self.route = None;
-            self.details.update(cx, |details, cx| details.reset(cx));
-            self.fields.retain(|k, _| k.starts_with("file:"));
-            self.files = None;
-            self.activity_turn = None;
-            self.memory_adding = false;
-            self.memory_edit = None;
-            self.settings = None;
-        }
-        self.active = Some(id.into());
+        self.make_active(id, cx);
         self.ensure_chat(id, cx);
-        self.reload_files(id, cx);
         cx.emit(TabOpened(id.into()));
         self.focus_active(window, cx);
         if let Some(view) = self.chats.get(id) {
@@ -1088,6 +1091,35 @@ impl Monos {
             }
         }
         self.save(cx);
+    }
+    /// Makes `id` the active Mono: on a switch, saves the previous Mono's
+    /// state, restores `id`'s panel view, and drops the previous Mono's files
+    /// and habits so nothing acts on them while `id`'s reload.
+    pub(super) fn make_active(&mut self, id: &str, cx: &mut Context<Self>) {
+        let switched = self.active.as_deref() != Some(id);
+        if switched {
+            self.save_open_file(cx);
+            self.pause_changes(cx);
+            self.remember_panel_view();
+            self.restore_panel_view(id, cx);
+            self.details.update(cx, |details, cx| details.reset(cx));
+            self.fields.retain(|k, _| k.starts_with("file:"));
+            self.files = None;
+            self.habits.clear();
+            self.activity_turn = None;
+            self.memory_adding = false;
+            self.memory_edit = None;
+            self.settings = None;
+        }
+        self.active = Some(id.into());
+        // A refresh may have evicted a restored document's body meanwhile.
+        if switched
+            && let Some(Route::Document(document)) = self.route.clone()
+            && !self.work.documents.contains_key(&document)
+        {
+            self.open_document(&document, cx);
+        }
+        self.reload_files(id, cx);
     }
     pub(crate) fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.is_none()
@@ -1102,6 +1134,7 @@ impl Monos {
         self.save_open_file(cx);
         self.pause_changes(cx);
         self.hide_html(cx);
+        self.remember_panel_view();
         if self.active.take().is_some() {
             self.details.update(cx, |details, cx| details.reset(cx));
             self.settings = None;
@@ -1241,7 +1274,9 @@ impl Monos {
                 icon_button("new-mono", "New mono", "plus")
                     .debug_selector(|| "sidebar-mono-button".into())
                     .size(px(20.))
-                    .when(!original, |d| d.mr(px(-2.)))
+                    // Centred on the sidebar's trailing column, with the
+                    // session filter and the navigation hints and counts.
+                    .when(!original, |d| d.mr(px(-3.)))
                     .on_click(cx.listener(move |this, _, w, cx| {
                         this.create(add_project.clone().into_iter().collect(), w, cx)
                     })),
@@ -1497,11 +1532,15 @@ impl Monos {
                         .w_full()
                         .min_w_0()
                         .pr_7()
-                        .gap(px(6.))
+                        .gap(px(crate::tab_tile::TAB_TILE_GAP))
                         .group_hover(group.clone(), move |s| {
                             s.opacity(1.).bg(title_tab_fill(active, true))
                         })
-                        .child(avatar::avatar(&mono.mascot, mono.color, "idle", 16., true))
+                        .child(crate::tab_tile::mark_tile(
+                            &crate::tab_tile::TAB_TILE,
+                            crate::tab_tile::Face::Neutral,
+                            avatar::avatar(&mono.mascot, mono.color, "idle", 14., true),
+                        ))
                         .child(
                             div()
                                 .flex_1()
