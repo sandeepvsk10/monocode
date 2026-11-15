@@ -871,6 +871,141 @@ mod tests {
             .unwrap();
     }
 
+    /// Drags a file tab to the chat composer and drops it there.
+    fn drag_tab_to_composer(visual: &mut VisualTestContext, ix: usize) -> bool {
+        let tab = visual
+            .debug_bounds(["file-tab-0", "file-tab-1"][ix])
+            .unwrap();
+        let composer = visual.debug_bounds("composer-box").unwrap();
+        let start = point(tab.left() + px(20.), tab.center().y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Default::default());
+        visual.simulate_mouse_move(
+            start + point(px(12.), px(0.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        visual.simulate_mouse_move(composer.center(), MouseButton::Left, Default::default());
+        let dragging = visual.update(|_, cx| cx.has_active_drag());
+        visual.simulate_mouse_up(composer.center(), MouseButton::Left, Default::default());
+        visual.run_until_parked();
+        dragging
+    }
+
+    #[gpui::test]
+    fn file_tab_drags_into_the_chat_without_reordering(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (window, _, session) = window(cx);
+        let folder = std::env::temp_dir().join(format!("monocode-tab-drag-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(folder.join(name), "fn main() {}\n").unwrap();
+        }
+        let review = window
+            .update(cx, |shell, w, cx| {
+                for name in ["a.rs", "b.rs"] {
+                    shell.open_review(
+                        ReviewTab::File {
+                            cwd: shell.workspace.project.clone(),
+                            path: folder.join(name).to_string_lossy().into_owned(),
+                        },
+                        w,
+                        cx,
+                    );
+                }
+                shell.reviews[&session].clone()
+            })
+            .unwrap();
+        let visual = &mut VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+
+        assert!(
+            drag_tab_to_composer(visual, 1),
+            "a file tab starts a file drag"
+        );
+        window
+            .update(visual, |shell, _, cx| {
+                assert!(!cx.has_active_drag());
+                assert_eq!(
+                    shell.sessions[&session].read(cx).attachments(),
+                    [folder.join("b.rs")]
+                );
+                assert_eq!(
+                    review
+                        .read(cx)
+                        .state
+                        .tabs
+                        .iter()
+                        .map(ReviewTab::label)
+                        .collect::<Vec<_>>(),
+                    ["a.rs", "b.rs"]
+                );
+            })
+            .unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[gpui::test]
+    fn lone_file_tab_drags_into_the_chat(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (window, _, session) = window(cx);
+        let path =
+            std::env::temp_dir().join(format!("monocode-lone-tab-{}.rs", std::process::id()));
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        window
+            .update(cx, |shell, w, cx| {
+                shell.open_review(
+                    ReviewTab::File {
+                        cwd: shell.workspace.project.clone(),
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    w,
+                    cx,
+                );
+            })
+            .unwrap();
+        let visual = &mut VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+
+        assert!(drag_tab_to_composer(visual, 0));
+        window
+            .update(visual, |shell, _, cx| {
+                assert_eq!(
+                    shell.sessions[&session].read(cx).attachments(),
+                    std::slice::from_ref(&path)
+                );
+            })
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[gpui::test]
+    fn changes_tab_does_not_start_a_file_drag(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (window, _, session) = window(cx);
+        window
+            .update(cx, |shell, w, cx| {
+                shell.open_review(
+                    ReviewTab::Changes {
+                        cwd: shell.workspace.project.clone(),
+                        path: None,
+                        staged: None,
+                    },
+                    w,
+                    cx,
+                );
+            })
+            .unwrap();
+        let visual = &mut VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+
+        assert!(!drag_tab_to_composer(visual, 0));
+        window
+            .update(visual, |shell, _, cx| {
+                assert!(shell.sessions[&session].read(cx).attachments().is_empty());
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn file_pane_grip_places_an_embedded_review_on_each_edge(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
